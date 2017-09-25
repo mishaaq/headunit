@@ -1,6 +1,7 @@
 #include "callbacks.h"
 #include "outputs.h"
 #include "glib_utils.h"
+#include "audio.h"
 #include "main.h"
 #include "bt/mzd_bluetooth.h"
 #include <dbus/dbus-protocol.h>
