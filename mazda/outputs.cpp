@@ -317,8 +317,6 @@ void VideoOutput::input_thread_func()
     }
 }
 
-
-
 VideoOutput::VideoOutput(MazdaEventCallbacks* callbacks)
     : callbacks(callbacks)
 {

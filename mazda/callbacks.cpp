@@ -147,9 +147,10 @@ class SetRequiredSurfacesHandler : public DBus::Callback_Base<bool, const DBus::
     VideoManagerClient *videoManagerClient;
 
 public:
-    SetRequiredSurfacesHandler(VideoManagerClient *ptr) : videoManagerClient(ptr) {}
+    SetRequiredSurfacesHandler(VideoManagerClient *videoMgrClient) : videoManagerClient(videoMgrClient) {}
 
     bool call(const DBus::Message& param) const override {
+        logd("SetRequiredSurfaces message caught - calling callback.");
         DBus::MessageIter ri = param.reader();
         std::string surfaces;
         ri >> surfaces;
@@ -160,17 +161,17 @@ public:
 };
 
 VideoManagerClient::VideoManagerClient(MazdaEventCallbacks& callbacks, DBus::Connection& hmiBus)
-        : DBus::ObjectProxy(hmiBus, "/com/jci/bucpsa", "com.jci.bucpsa"), guiClient(hmiBus), bthfClient(*this, hmiBus), callbacks(callbacks)
+        : DBus::ObjectProxy(hmiBus, "/com/jci/bucpsa", "com.jci.bucpsa"), guiClient(hmiBus), callbacks(callbacks)
 {
     uint32_t currentDisplayMode;
     int32_t returnValue;
     // check if backup camera is not visible at the moment and get output only when not
     GetDisplayMode(currentDisplayMode, returnValue);
     allowedToGetFocus = !(bool)currentDisplayMode;
-    hmiBus.add_match("type='method_call',path='/com/jci/nativeguictrl',member='SetRequiredSurfaces'");
-    DBus::MessageSlot slot;
-    slot = new SetRequiredSurfacesHandler(this);
-    hmiBus.add_filter(slot);
+    hmiBus.add_match(this->MATCH);
+    dbusFilter = new SetRequiredSurfacesHandler(this);
+    hmiBus.add_filter(dbusFilter);
+    logd("VideoManagerClient initialized.");
 }
 
 VideoManagerClient::~VideoManagerClient() {
@@ -179,6 +180,9 @@ VideoManagerClient::~VideoManagerClient() {
         logd("Requesting video surface: JCI_OPERA_PRIMARY");
         guiClient.SetRequiredSurfacesByEnum({NativeGUICtrlClient::JCI_OPERA_PRIMARY}, true);
     }
+    this->conn().remove_filter(dbusFilter);
+    this->conn().remove_match(this->MATCH, false);
+    logd("VideoManagerClient deinitialized.");
 }
 
 void VideoManagerClient::requestVideoFocus(VIDEO_FOCUS_REQUESTOR requestor)
@@ -241,7 +245,7 @@ bool VideoManagerClient::requiredSurfacesCallback(const std::string &surfaces, c
     // handle callback
     std::stringstream surfacesDebug;
     std::copy(surfaces.begin(), surfaces.end(), std::ostream_iterator<int>(surfacesDebug, " "));
-    logd("CMU switches surfaces: %s", surfacesDebug.str().c_str());
+    logd("CMU switches surfaces to: %s", surfacesDebug.str().c_str());
     return true;
 }
 
@@ -481,15 +485,5 @@ void AudioManagerClient::Notify(const std::string &signalName, const std::string
         {
             loge("Failed to parse state json: %s", ex.what());
         }
-    }
-}
-
-void BTHFClient::CallStatus(const uint32_t &bthfstate, const uint32_t &call1status, const uint32_t &call2status,
-                            const ::DBus::Struct<std::vector<uint8_t> > &call1Number,
-                            const ::DBus::Struct<std::vector<uint8_t> > &call2Number) {
-    if ((bool)bthfstate) {
-        videoMgrClient.releaseVideoFocus(VIDEO_FOCUS_REQUESTOR::BTHF);
-    } else {
-        videoMgrClient.requestVideoFocus(VIDEO_FOCUS_REQUESTOR::BTHF);
     }
 }
