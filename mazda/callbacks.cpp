@@ -1,10 +1,9 @@
+#include <dbus/dbus.h>
 #include "callbacks.h"
 #include "outputs.h"
 #include "glib_utils.h"
-#include "audio.h"
 #include "main.h"
 #include "bt/mzd_bluetooth.h"
-#include <dbus/dbus-protocol.h>
 
 #include "json/json.hpp"
 using json = nlohmann::json;
@@ -150,28 +149,44 @@ public:
     SetRequiredSurfacesHandler(VideoManagerClient *videoMgrClient) : videoManagerClient(videoMgrClient) {}
 
     bool call(const DBus::Message& param) const override {
-        logd("SetRequiredSurfaces message caught - calling callback.");
-        DBus::MessageIter ri = param.reader();
-        std::string surfaces;
-        ri >> surfaces;
-        int16_t bFadeOpera;
-        ri >> bFadeOpera;
-        return videoManagerClient->requiredSurfacesCallback(surfaces, bFadeOpera);
+        if (param.type() == DBUS_MESSAGE_TYPE_METHOD_CALL) {
+            const DBus::CallMessage msg = static_cast<const DBus::CallMessage&>(param);
+            if (strcmp(msg.member(), "SetRequiredSurfaces") == 0) {
+                logw("SetRequiredSurfaces message caught - calling callback.");
+                DBus::MessageIter ri = param.reader();
+                std::string surfaces;
+                ri >> surfaces;
+                int16_t bFadeOpera;
+                ri >> bFadeOpera;
+                videoManagerClient->requiredSurfacesCallback(surfaces, bFadeOpera);
+            }
+        }
+        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
     }
 };
 
 VideoManagerClient::VideoManagerClient(MazdaEventCallbacks& callbacks, DBus::Connection& hmiBus)
-        : DBus::ObjectProxy(hmiBus, "/com/jci/bucpsa", "com.jci.bucpsa"), guiClient(hmiBus), callbacks(callbacks)
-{
+        : DBus::ObjectProxy(hmiBus, "/com/jci/bucpsa", "com.jci.bucpsa"),
+          dbusFilterFunc(new SetRequiredSurfacesHandler(this)),
+          guiClient(hmiBus),
+          callbacks(callbacks) {
     uint32_t currentDisplayMode;
     int32_t returnValue;
     // check if backup camera is not visible at the moment and get output only when not
     GetDisplayMode(currentDisplayMode, returnValue);
     allowedToGetFocus = !(bool)currentDisplayMode;
-    hmiBus.add_match(this->MATCH);
-    dbusFilter = new SetRequiredSurfacesHandler(this);
-    hmiBus.add_filter(dbusFilter);
-    logd("VideoManagerClient initialized.");
+    logw("VideoManagerClient setting up dbus filter.");
+    dbusFilter = dbusFilterFunc.get();
+    try {
+        hmiBus.add_match(this->MATCH);
+        if (!hmiBus.add_filter(dbusFilter)) {
+            loge("Cannot add new dbus filter.");
+            hmiBus.remove_match(this->MATCH, false);
+        }
+    } catch (std::exception &e) {
+        loge("Error setting up : %s", e.what());
+    }
+    logw("VideoManagerClient initialized.");
 }
 
 VideoManagerClient::~VideoManagerClient() {
@@ -180,9 +195,9 @@ VideoManagerClient::~VideoManagerClient() {
         logd("Requesting video surface: JCI_OPERA_PRIMARY");
         guiClient.SetRequiredSurfacesByEnum({NativeGUICtrlClient::JCI_OPERA_PRIMARY}, true);
     }
-    this->conn().remove_filter(dbusFilter);
     this->conn().remove_match(this->MATCH, false);
-    logd("VideoManagerClient deinitialized.");
+    this->conn().remove_filter(dbusFilter);
+    logw("VideoManagerClient deinitialized.");
 }
 
 void VideoManagerClient::requestVideoFocus(VIDEO_FOCUS_REQUESTOR requestor)
@@ -243,10 +258,15 @@ void VideoManagerClient::DisplayMode(const uint32_t &currentDisplayMode)
 
 bool VideoManagerClient::requiredSurfacesCallback(const std::string &surfaces, const int16_t &bFadeOpera) {
     // handle callback
-    std::stringstream surfacesDebug;
-    std::copy(surfaces.begin(), surfaces.end(), std::ostream_iterator<int>(surfacesDebug, " "));
-    logd("CMU switches surfaces to: %s", surfacesDebug.str().c_str());
-    return true;
+    logw("CMU switches surfaces to: %s", surfaces.c_str());
+    std::vector<NativeGUICtrlClient::SURFACES> enumList = guiClient.ParseSurfaceString(surfaces);
+    bool isTvSurface = std::find(enumList.begin(), enumList.end(), NativeGUICtrlClient::TV_TOUCH_SURFACE) != enumList.end();
+    if (callbacks.videoFocus && !isTvSurface)
+    {
+        //Ignore it
+        return true;
+    }
+    return false;
 }
 
 bool MazdaCommandServerCallbacks::IsConnected() const

@@ -2,7 +2,7 @@
 #include <stdio.h>
 #define GDK_VERSION_MIN_REQUIRED (GDK_VERSION_3_10)
 #include <gdk/gdk.h>
-#include <time.h>
+#include <dbus-c++/glib-integration.h>
 
 //This gets defined by SDL and breaks the protobuf headers
 #undef Status
@@ -12,7 +12,6 @@
 
 #include "main.h"
 #include "outputs.h"
-#include "callbacks.h"
 
 gst_app_t gst_app;
 
@@ -29,12 +28,15 @@ get_cur_timestamp() {
         return tp.tv_sec * 1000000 + tp.tv_nsec / 1000;
 }
 
+DBus::Glib::BusDispatcher dispatcher;
+
 static int
 gst_loop(gst_app_t *app) {
-        int ret;
+        int ret = 0;
         GstStateChangeReturn state_ret;
 
         app->loop = g_main_loop_new(NULL, FALSE);
+        dispatcher.attach(g_main_loop_get_context(app->loop));
         printf("Starting Android Auto...\n");
         g_main_loop_run(app->loop);
 
@@ -87,14 +89,18 @@ main(int argc, char *argv[]) {
         //loop to emulate the caar
         while(true)
         {
-            DesktopEventCallbacks callbacks;
+            DBus::default_dispatcher = &dispatcher;
+            auto hmiBus = new DBus::Connection("unix:path=/tmp/dbus_hmi_socket");
+            hmiBus->register_bus();
+
+            DesktopEventCallbacks callbacks(*hmiBus);
             HUServer headunit(callbacks);
 
             /* Start AA processing */
             ret = headunit.hu_aap_start(HU_TRANSPORT_TYPE::USB, true);
             if (ret < 0) {
-                    printf("Phone is not connected. Connect a supported phone and restart.\n");
-                    return 0;
+                printf("Phone is not connected. Connect a supported phone and restart.\n");
+                return 0;
             }
 
             callbacks.connected = true;
@@ -121,8 +127,4 @@ main(int argc, char *argv[]) {
 
             g_hu = nullptr;
         }
-
-        SDL_Quit();
-
-        return (ret);
 }

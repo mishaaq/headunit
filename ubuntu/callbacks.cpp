@@ -1,13 +1,15 @@
+#include <dbus/dbus.h>
 #include "callbacks.h"
 #include "outputs.h"
 #include "glib_utils.h"
 #include "bt/ub_bluetooth.h"
 
-DesktopEventCallbacks::DesktopEventCallbacks() :
+DesktopEventCallbacks::DesktopEventCallbacks(DBus::Connection hmiBus) :
     connected(false),
     videoFocus(false),
     audioFocus(false)
 {
+    videoMgrClient.reset(new VideoManagerClientStub(*this, hmiBus));
 }
 
 DesktopEventCallbacks::~DesktopEventCallbacks() {
@@ -108,6 +110,52 @@ void DesktopEventCallbacks::VideoFocusHappened(bool hasFocus, VIDEO_FOCUS_REQUES
         });
         return false;
     });
+}
+
+class SetRequiredSurfacesHandler : public DBus::Callback_Base<bool, const DBus::Message&> {
+    VideoManagerClientStub *videoManagerClient;
+
+public:
+    SetRequiredSurfacesHandler(VideoManagerClientStub *videoMgrClient) : videoManagerClient(videoMgrClient) {}
+
+    bool call(const DBus::Message& param) const override {
+        if (param.type() == DBUS_MESSAGE_TYPE_METHOD_CALL) {
+            const DBus::CallMessage msg = static_cast<const DBus::CallMessage&>(param);
+            if (strcmp(msg.member(), "SetRequiredSurfaces") == 0) {
+                logw("SetRequiredSurfaces message caught - calling callback.");
+                DBus::MessageIter ri = param.reader();
+                std::string surfaces;
+                ri >> surfaces;
+                int16_t bFadeOpera;
+                ri >> bFadeOpera;
+                logw("surfaces: %s, bFadeOpera: %i", surfaces.c_str(), bFadeOpera);
+            }
+        }
+    }
+};
+
+VideoManagerClientStub::VideoManagerClientStub(DesktopEventCallbacks &callbacks, DBus::Connection &hmiBus)
+        : callbacks(callbacks), hmiBus(hmiBus), dbusFilterFunc(new SetRequiredSurfacesHandler(this))
+{
+    logw("VideoManagerClientStub setting up dbus filter.");
+    dbusFilter = dbusFilterFunc.get();
+    try {
+        hmiBus.add_match(this->MATCH);
+    } catch (std::exception &e) {
+        loge("Error adding new dbus filter: %s", e.what());
+    }
+    if (!hmiBus.add_filter(dbusFilter)) {
+        loge("Cannot attach dbus filter method.");
+    }
+    hmiBus.flush();
+    logw("VideoManagerClientStub initialized.");
+}
+
+VideoManagerClientStub::~VideoManagerClientStub() {
+    hmiBus.remove_match(this->MATCH, false);
+    hmiBus.remove_filter(dbusFilter);
+    dbusFilterFunc.reset();
+    logw("VideoManagerClientStub deinitialized.");
 }
 
 DesktopCommandServerCallbacks::DesktopCommandServerCallbacks()
